@@ -157,7 +157,7 @@ for it = 2:Te
     E_state.I_n_mean = I_e_mean_cur * params.dt;
     E_state.I_n_var  = I_e_var_cur  * params.dt;
 
-    E_output = DIFODE_module_bins_bx_batch(E_state, params);
+    E_output = dsODE_module_2D(E_state, params);
     %E_output = dsODE_gaussian_batch(E_state, params);
 
     % 加噪声（就地）并写入历史 fr/ref
@@ -182,7 +182,7 @@ for it = 2:Te
     I_state.I_n_mean = I_i_mean_cur * params.dt;
     I_state.I_n_var  = I_i_var_cur  * params.dt;
 
-    I_output = DIFODE_module_bins_bx_batch(I_state, params);
+    I_output = dsODE_module_2D(I_state, params);
     %I_output = dsODE_gaussian_batch(I_state, params);
 
     %noise = random('Normal', 0, sqrt(max(I_output.fr_n,0)));
