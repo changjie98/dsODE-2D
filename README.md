@@ -35,7 +35,7 @@ dsODE_2D/
 首先在 MATLAB 中进入本目录：
 
 ```matlab
-cd('path/to/dsODE_fvm_release')
+cd('path/to/dsODE_2D')
 ```
 
 ## 单区块 FVM
