@@ -1,6 +1,6 @@
 # dsODE-FVM and LIF models
 
-本目录提供四个可以直接运行的 MATLAB 入口，用于比较单区块及 121 区块网络中的 LIF 模型和有限体积密度模型（dsODE-FVM）。
+本目录提供四个可以直接运行的 MATLAB 入口，用于比较单区块及 121 区块网络中的 LIF 模型和有限体积密度模型（dsODE-FVM）。dsODE-FVM应用了与旧版 dsODE 相同的逻辑，并采用了 Finite Volume Method 来实现，是更新的 dsODE 模型。
 
 ## 模型与命名约定
 
@@ -14,7 +14,7 @@ dsODE-FVM 将膜电压概率密度划分为有限体积区间。每个区间保�
 ## 文件结构
 
 ```text
-dsODE_fvm_release/
+dsODE_2D/
 ├── main_dsODE_fvm.m          # 单区块 FVM
 ├── main_dsODE_fvm_grid.m     # 121 区块 FVM
 ├── main_LIF.m                # 单区块 LIF
@@ -50,7 +50,7 @@ res_fvm = main_dsODE_fvm();
 res_fvm.params
 ```
 
-`E_sp/I_sp` 是根据 FVM 的连续阈值通量抽样得到的伪神经元脉冲事件，主要用于 raster 可视化。默认 `rng_seed = 1`，所以重复运行会得到相同的抽样结果；生成事件后会恢复 MATLAB 原来的随机数状态。
+`E_sp/I_sp` 是根据 FVM 的连续阈值通量抽样得到的伪神经元脉冲事件，主要用于 raster 可视化。
 
 ## 121 区块 FVM
 
@@ -123,7 +123,7 @@ plot_raster(res_lif_grid)
 3. LIF 使用的、按区块连续重映射的 `*_block_conn_mat.mat`；
 4. 记录位置、分组和编号映射的 `network_layout.mat`。
 
-建议先输出到一个新目录：
+没有连接矩阵的情况下，需要先运行：
 
 ```matlab
 addpath(fullfile(pwd,'connection_mat'))
@@ -201,9 +201,6 @@ p.overwrite = true;
 
 单区块模型默认使用 300 个 E 神经元、100 个 I 神经元以及四类均为 0.2 的连接概率。修改参数时，应同时修改 `main_dsODE_fvm.m` 和 `main_LIF.m`，以保证两个模型可比。
 
-## 可用的 sigma
-
-发布目录中四类连接均提供从 0.05 到 0.50、间隔 0.01 的预计算文件。例如 `0.10`、`0.25` 和 `0.47` 都可以直接使用。输入值必须与已有文件名精确对应。
 
 ## 主要输出
 
@@ -216,10 +213,3 @@ p.overwrite = true;
 
 所有 `E_sp/I_sp` 都采用 `2×N` 格式：第一行为神经元编号，第二行为脉冲时间（ms）。LIF 的事件来自逐神经元模拟；FVM 的事件由连续阈值通量抽样生成，仅用于把群体密度结果显示成 raster。
 
-## GitHub 文件大小
-
-`connection_mat` 总大小约 323 MB，但单个文件均小于 5 MB，未超过 GitHub 的 100 MB 单文件限制。为了减小普通 Git 仓库体积，也可以使用 Git LFS 管理 `.mat` 文件。
-
-## 引用与许可
-
-发布前请根据项目用途补充作者、许可证和相关论文引用信息。
