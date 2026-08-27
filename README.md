@@ -190,7 +190,7 @@ p.overwrite = true;
 
 | 参数 | 默认值 |
 |---|---:|
-| 模拟时长 | FVM 与两个网格入口 500 ms；单区块 LIF 1000 ms |
+| 模拟时长 | 1000 ms |
 | 时间步长 | 0.1 ms |
 | `tau_m` | 20 ms |
 | `tau_ee`, `tau_ei` | 3 ms |
