@@ -64,7 +64,7 @@ res_fvm_grid = main_dsODE_fvm_grid(0.10,0.25,0.10,0.50);
 sigmaEE, sigmaEI, sigmaIE, sigmaII
 ```
 
-函数会从本目录的 `connection_mat` 文件夹加载对应的 121×121 区块概率矩阵。
+函数会从本目录的 `connection_mat` 文件夹加载对应的 11×11 区块概率矩阵。
 
 如果 `connection_mat` 文件夹暂未有连接矩阵，需要先运行
 
