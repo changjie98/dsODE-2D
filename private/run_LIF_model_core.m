@@ -8,6 +8,7 @@ function res = run_LIF_model_core(params, connection_mat)
 %   params.tau_ee, params.tau_ei, params.tau_i
 %   params.s_ee, params.s_ei, params.s_ie, params.s_ii
 %   params.Ex_Poisson_lambda
+%   params.connect: 'fixed' (default), 'nofixed' or 'prob_mat'
 %   connection_mat: (ne+ni) x (ne+ni), row=pre, col=post
 %
 % Output:
@@ -22,12 +23,12 @@ ne = params.ne;
 ni = params.ni;
 t_end = round(params.duration_time / dt);
 
-if nargin < 2 || isempty(connection_mat)
-    error('run_LIF_model_mini requires connection_mat.');
+if ~isfield(params, 'connect') || isempty(params.connect)
+    params.connect = 'fixed';
 end
-
-if size(connection_mat, 1) ~= ne + ni || size(connection_mat, 2) ~= ne + ni
-    error('connection_mat size mismatch. Expect (%d x %d).', ne + ni, ne + ni);
+connect_mode = lower(char(params.connect));
+if ~ismember(connect_mode, {'fixed','nofixed','prob_mat'})
+    error('params.connect must be fixed, nofixed or prob_mat.');
 end
 
 if ~isfield(params, 'record_interval')
@@ -47,16 +48,66 @@ if ~ismember(refractory_mode, {'fixed','exponential'})
     error('params.refractory_mode must be fixed or exponential.');
 end
 
-% Keep sparse/logical to reduce memory and speed row-aggregation.
-if ~issparse(connection_mat)
-    connection_mat = sparse(connection_mat);
-end
-connection_mat = spones(connection_mat);
+if strcmp(connect_mode, 'fixed')
+    if nargin < 2 || isempty(connection_mat)
+        error('Fixed connection mode requires connection_mat.');
+    end
+    if size(connection_mat, 1) ~= ne + ni || size(connection_mat, 2) ~= ne + ni
+        error('connection_mat size mismatch. Expect (%d x %d).', ne + ni, ne + ni);
+    end
 
-conn_ee = connection_mat(1:ne, 1:ne);
-conn_ei = connection_mat(1:ne, ne+1:ne+ni);      % E -> I
-conn_ie = connection_mat(ne+1:ne+ni, 1:ne);      % I -> E
-conn_ii = connection_mat(ne+1:ne+ni, ne+1:ne+ni);
+    % Keep sparse/logical to reduce memory and speed row-aggregation.
+    if ~issparse(connection_mat)
+        connection_mat = sparse(connection_mat);
+    end
+    connection_mat = spones(connection_mat);
+    conn_ee = connection_mat(1:ne, 1:ne);
+    conn_ei = connection_mat(1:ne, ne+1:ne+ni);      % E -> I
+    conn_ie = connection_mat(ne+1:ne+ni, 1:ne);      % I -> E
+    conn_ii = connection_mat(ne+1:ne+ni, ne+1:ne+ni);
+elseif strcmp(connect_mode,'nofixed')
+    probability_names = {'p_ee','p_ei','p_ie','p_ii'};
+    for k = 1:numel(probability_names)
+        name = probability_names{k};
+        if ~isfield(params,name) || ~isscalar(params.(name)) || ...
+                ~isfinite(params.(name)) || params.(name) < 0 || params.(name) > 1
+            error('params.%s must be a probability in [0,1].',name);
+        end
+    end
+    connection_mat = [];
+else
+    if ~isfield(params,'E_group') || ~isfield(params,'I_group') || ...
+            ~isfield(params,'block_prob_mat')
+        error(['prob_mat mode requires params.E_group, params.I_group ' ...
+            'and params.block_prob_mat.']);
+    end
+    E_group = double(params.E_group(:).');
+    I_group = double(params.I_group(:).');
+    if numel(E_group) ~= numel(I_group) || sum(E_group) ~= ne || sum(I_group) ~= ni || ...
+            any(E_group < 0 | E_group ~= round(E_group)) || ...
+            any(I_group < 0 | I_group ~= round(I_group))
+        error('E_group and I_group must be nonnegative integer counts matching ne and ni.');
+    end
+    n_blocks = numel(E_group);
+    block_probability_names = {'EE','EI','IE','II'};
+    for k = 1:numel(block_probability_names)
+        name = block_probability_names{k};
+        if ~isfield(params.block_prob_mat,name)
+            error('params.block_prob_mat is missing field %s.',name);
+        end
+        probability = double(params.block_prob_mat.(name));
+        if ~isequal(size(probability),[n_blocks,n_blocks]) || ...
+                any(~isfinite(probability(:))) || ...
+                any(probability(:) < 0 | probability(:) > 1)
+            error('params.block_prob_mat.%s must be a %d-by-%d probability matrix.', ...
+                name,n_blocks,n_blocks);
+        end
+        params.block_prob_mat.(name) = probability;
+    end
+    e_block_of_neuron = repelem(1:n_blocks,E_group);
+    i_block_of_neuron = repelem(1:n_blocks,I_group);
+    connection_mat = [];
+end
 
 if isfield(params, 'init_v_min') && isfield(params, 'init_v_max')
     V_e = params.init_v_min + (params.init_v_max - params.init_v_min) * rand(1, ne);
@@ -165,22 +216,46 @@ for it = 2:t_end
         end
     end
 
-    if ~isempty(spk_e)
-        sv_e = sparse(1, spk_e, 1, 1, ne);
-        Hee_generate = full(sv_e * conn_ee);
-        Hei_generate = full(sv_e * conn_ei);
+    if strcmp(connect_mode,'nofixed')
+        Hee_generate = binornd(numel(spk_e),params.p_ee,1,ne);
+        Hei_generate = binornd(numel(spk_e),params.p_ei,1,ni);
+        Hie_generate = binornd(numel(spk_i),params.p_ie,1,ne);
+        Hii_generate = binornd(numel(spk_i),params.p_ii,1,ni);
+    elseif strcmp(connect_mode,'prob_mat')
+        spike_count_e = zeros(n_blocks,1);
+        spike_count_i = zeros(n_blocks,1);
+        if ~isempty(spk_e)
+            spike_count_e = accumarray(e_block_of_neuron(spk_e).',1,[n_blocks,1]);
+        end
+        if ~isempty(spk_i)
+            spike_count_i = accumarray(i_block_of_neuron(spk_i).',1,[n_blocks,1]);
+        end
+        Hee_generate = local_block_projection( ...
+            spike_count_e,params.block_prob_mat.EE,E_group);
+        Hei_generate = local_block_projection( ...
+            spike_count_e,params.block_prob_mat.EI,I_group);
+        Hie_generate = local_block_projection( ...
+            spike_count_i,params.block_prob_mat.IE,E_group);
+        Hii_generate = local_block_projection( ...
+            spike_count_i,params.block_prob_mat.II,I_group);
     else
-        Hee_generate = zeros(1, ne);
-        Hei_generate = zeros(1, ni);
-    end
+        if ~isempty(spk_e)
+            sv_e = sparse(1, spk_e, 1, 1, ne);
+            Hee_generate = full(sv_e * conn_ee);
+            Hei_generate = full(sv_e * conn_ei);
+        else
+            Hee_generate = zeros(1, ne);
+            Hei_generate = zeros(1, ni);
+        end
 
-    if ~isempty(spk_i)
-        sv_i = sparse(1, spk_i, 1, 1, ni);
-        Hie_generate = full(sv_i * conn_ie);
-        Hii_generate = full(sv_i * conn_ii);
-    else
-        Hie_generate = zeros(1, ne);
-        Hii_generate = zeros(1, ni);
+        if ~isempty(spk_i)
+            sv_i = sparse(1, spk_i, 1, 1, ni);
+            Hie_generate = full(sv_i * conn_ie);
+            Hii_generate = full(sv_i * conn_ii);
+        else
+            Hie_generate = zeros(1, ne);
+            Hii_generate = zeros(1, ni);
+        end
     end
 
     H_ee = max(0, H_ee + Hee_generate - H_ee * dt / params.tau_ee);
@@ -207,4 +282,20 @@ res.fr_i = nf_i / dt;
 res.E_sp = E_sp;
 res.I_sp = I_sp;
 res.connection_mat = connection_mat;
+end
+
+
+function generated = local_block_projection(spike_count,probability,post_group)
+post_offsets = [0,cumsum(post_group)];
+generated = zeros(1,post_offsets(end));
+active_pre_blocks = find(spike_count > 0).';
+for pre_block = active_pre_blocks
+    post_blocks = find(probability(pre_block,:) > 0);
+    for post_block = post_blocks
+        ids = post_offsets(post_block)+1:post_offsets(post_block+1);
+        generated(ids) = generated(ids) + binornd( ...
+            spike_count(pre_block),probability(pre_block,post_block), ...
+            1,numel(ids));
+    end
+end
 end
