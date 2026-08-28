@@ -1,13 +1,14 @@
 function res_dsODE = dsODE_fvm_single_core(block_prob_mat, params, lif_result, lif_time_ms)
 % Internal solver for main_dsODE_fvm.
 %
-% The voltage Fokker-Planck equations, refractory states, and synaptic
-% mean/variance states are integrated simultaneously by ode15s.
+% The voltage Fokker-Planck equations and synaptic mean/variance states
+% are integrated either by an ODE solver or by fixed-step SSP-RK3. The
+% fixed_queue_ssprk3 mode uses an exact discrete refractory-time queue.
 % Cross-population names use presynaptic-to-postsynaptic order:
 % IE = I -> E and EI = E -> I.
 %
 % Optional LIF initialization:
-%   res = main_dsODE_fvm_ode(P, params, lif_result, lif_time_ms)
+%   res = dsODE_fvm_single_core(P, params, lif_result, lif_time_ms)
 % lif_result may be the output of main_LIF_mini/run_LIF_model_mini, or a
 % snapshot struct containing V_e, V_i, H_ee, H_ie, H_ei, and H_ii. For a
 % recorded LIF result, lif_time_ms must exactly match a recorded time.
@@ -143,13 +144,16 @@ for i = 1:numel(names)
 end
 
 positive_names = {'M','ne','ni','dt','duration_time','tau_ee','tau_ei', ...
-    'tau_i','tau_r','tau_m','V_bin','rel_tol','abs_tol','max_step', ...
+    'tau_i','tau_r','V_bin','rel_tol','abs_tol','max_step', ...
     'refractory_stages','fixed_cfl','fixed_max_step'};
 for i = 1:numel(positive_names)
     name = positive_names{i};
     if params.(name) <= 0
         error('params.%s must be positive.', name);
     end
+end
+if params.tau_m < 0
+    error('params.tau_m must be nonnegative.');
 end
 if params.refractory_stages ~= round(params.refractory_stages)
     error('params.refractory_stages must be a positive integer.');
@@ -539,7 +543,7 @@ denom = p.M + p.Mr;
 synaptic_diffusion = double(p.include_synaptic_diffusion);
 inh_e = (p.s_ie / p.tau_i) * H_ie / denom;
 a0_e = p.J_ex + (p.s_ee / p.tau_ee) * H_ee - inh_e * p.Mr;
-a1_e = -1 / p.tau_m - inh_e;
+    a1_e = local_membrane_leak_slope(p.tau_m) - inh_e;
 b0_e = p.J_ex + synaptic_diffusion * ...
     (p.s_ee^2 / p.tau_ee^2) * Q_ee;
 b2_e = synaptic_diffusion * ...
@@ -547,7 +551,7 @@ b2_e = synaptic_diffusion * ...
 
 inh_i = (p.s_ii / p.tau_i) * H_ii / denom;
 a0_i = p.J_ex + (p.s_ei / p.tau_ei) * H_ei - inh_i * p.Mr;
-a1_i = -1 / p.tau_m - inh_i;
+    a1_i = local_membrane_leak_slope(p.tau_m) - inh_i;
 b0_i = p.J_ex + synaptic_diffusion * ...
     (p.s_ei^2 / p.tau_ei^2) * Q_ei;
 b2_i = synaptic_diffusion * ...
@@ -750,12 +754,12 @@ denom = p.M+p.Mr;
 synaptic_diffusion = double(p.include_synaptic_diffusion);
 inh_e = (p.s_ie/p.tau_i)*H_ie/denom;
 a0_e = p.J_ex+(p.s_ee/p.tau_ee)*H_ee-inh_e*p.Mr;
-a1_e = -1/p.tau_m-inh_e;
+a1_e = local_membrane_leak_slope(p.tau_m)-inh_e;
 b0_e = p.J_ex+synaptic_diffusion*(p.s_ee^2/p.tau_ee^2)*Q_ee;
 b2_e = synaptic_diffusion*(p.s_ie^2/p.tau_i^2)*Q_ie/denom^2;
 inh_i = (p.s_ii/p.tau_i)*H_ii/denom;
 a0_i = p.J_ex+(p.s_ei/p.tau_ei)*H_ei-inh_i*p.Mr;
-a1_i = -1/p.tau_m-inh_i;
+a1_i = local_membrane_leak_slope(p.tau_m)-inh_i;
 b0_i = p.J_ex+synaptic_diffusion*(p.s_ei^2/p.tau_ei^2)*Q_ei;
 b2_i = synaptic_diffusion*(p.s_ii^2/p.tau_i^2)*Q_ii/denom^2;
 
@@ -808,12 +812,12 @@ denom = p.M+p.Mr;
 synaptic_diffusion = double(p.include_synaptic_diffusion);
 inh_e = (p.s_ie/p.tau_i)*H_ie/denom;
 a0_e = p.J_ex+(p.s_ee/p.tau_ee)*H_ee-inh_e*p.Mr;
-a1_e = -1/p.tau_m-inh_e;
+a1_e = local_membrane_leak_slope(p.tau_m)-inh_e;
 b0_e = p.J_ex+synaptic_diffusion*(p.s_ee^2/p.tau_ee^2)*Q_ee;
 b2_e = synaptic_diffusion*(p.s_ie^2/p.tau_i^2)*Q_ie/denom^2;
 inh_i = (p.s_ii/p.tau_i)*H_ii/denom;
 a0_i = p.J_ex+(p.s_ei/p.tau_ei)*H_ei-inh_i*p.Mr;
-a1_i = -1/p.tau_m-inh_i;
+a1_i = local_membrane_leak_slope(p.tau_m)-inh_i;
 b0_i = p.J_ex+synaptic_diffusion*(p.s_ei^2/p.tau_ei^2)*Q_ei;
 b2_i = synaptic_diffusion*(p.s_ii^2/p.tau_i^2)*Q_ii/denom^2;
 centers = 0.5*(edges(1:end-1)+edges(2:end));
@@ -924,13 +928,13 @@ for it = 1:T
     release_i = local_refractory_release(max(Y(it,L.R_i),0).', p);
     [~,~,res.fr_e(it)] = local_voltage_rhs(N_e, M_e, release_e, ...
         p.J_ex+(p.s_ee/p.tau_ee)*H_ee-inh_e*p.Mr, ...
-        -1/p.tau_m-inh_e, ...
+        local_membrane_leak_slope(p.tau_m)-inh_e, ...
         p.J_ex+synaptic_diffusion*(p.s_ee^2/p.tau_ee^2)*Q_ee, ...
         synaptic_diffusion*(p.s_ie^2/p.tau_i^2)*Q_ie/denom^2, ...
         p, edges, reset_bin);
     [~,~,res.fr_i(it)] = local_voltage_rhs(N_i, M_i, release_i, ...
         p.J_ex+(p.s_ei/p.tau_ei)*H_ei-inh_i*p.Mr, ...
-        -1/p.tau_m-inh_i, ...
+        local_membrane_leak_slope(p.tau_m)-inh_i, ...
         p.J_ex+synaptic_diffusion*(p.s_ei^2/p.tau_ei^2)*Q_ei, ...
         synaptic_diffusion*(p.s_ii^2/p.tau_i^2)*Q_ii/denom^2, ...
         p, edges, reset_bin);
@@ -944,4 +948,13 @@ res.meta.state_equation = 'dXdt=F(X)';
 res.meta.voltage_edges = edges;
 res.meta.connection_direction = ...
     'ie: I-to-E, ei: E-to-I, rows presynaptic';
+end
+
+
+function slope = local_membrane_leak_slope(tau_m)
+if tau_m == 0
+    slope = 0;
+else
+    slope = -1/tau_m;
+end
 end
