@@ -17,7 +17,7 @@ end
 project_root = fileparts(mfilename('fullpath'));
 connection_dir = fullfile(project_root,'connection_mat');
 params = struct();
-params.connection_matrix_type = 'block_conn'; % 'block_conn' or 'conn_mat'
+params.connection_matrix_type = 'block_conn'; % 'block_conn', 'conn_mat' or 'prob_mat'
 params.connection_matrix_type = lower(char(params.connection_matrix_type));
 layout = load(fullfile(connection_dir,'network_layout.mat'), ...
     'E_group','I_group','index_map');
@@ -27,8 +27,16 @@ index_map = double(layout.index_map(:));
 ne = sum(E_group);
 ni = sum(I_group);
 
-[connection_mat,connection_files] = local_load_connections( ...
-    connection_dir,sigma,ne,ni,params.connection_matrix_type);
+[connection_mat,connection_files,block_prob_mat] = local_load_connections( ...
+    connection_dir,sigma,E_group,I_group,params.connection_matrix_type);
+if strcmp(params.connection_matrix_type,'prob_mat')
+    params.connect = 'prob_mat';
+    params.block_prob_mat = block_prob_mat;
+    params.E_group = E_group;
+    params.I_group = I_group;
+else
+    params.connect = 'fixed';
+end
 
 params.Ex_Poisson_lambda = 5;
 params.M = 100;
@@ -36,18 +44,20 @@ params.Mr = 66;
 params.ne = ne;
 params.ni = ni;
 params.dt = 0.1;
-params.duration_time = 1000;
+params.duration_time = 500;
 params.tau_m = 20;
 params.tau_ee = 3;
 params.tau_ei = 3;
 params.tau_i = 10;
 params.tau_r = 2;
 params.s_ee = 3;
-params.s_ei = 4;
-params.s_ie = 8;
-params.s_ii = 8;
+params.s_ei = 5;
+params.s_ie = 9;
+params.s_ii = 10;
 params.record_interval = 5;
 params.refractory_mode = 'fixed';
+params.init_v_min = 0;
+params.init_v_max = 0;
 params.rng_seed = 1;
 params.sigmaEE = sigmaEE;
 params.sigmaEI = sigmaEI;
@@ -62,7 +72,7 @@ inverse_map = zeros(size(index_map));
 inverse_map(index_map) = 1:numel(index_map);
 e_remap_idx = (1:ne)';
 i_remap_idx = (ne+(1:ni))';
-if strcmp(params.connection_matrix_type,'block_conn')
+if ismember(params.connection_matrix_type,{'block_conn','prob_mat'})
     lif_e_ids = inverse_map(e_remap_idx);
     lif_i_ids = inverse_map(i_remap_idx);
     spike_id_order = 'block_order';
@@ -99,14 +109,18 @@ fprintf('main_LIF_grid finished in %.3f s.\n',res_lif_grid.runtime_s);
 end
 
 
-function [conn,files] = local_load_connections(folder,sigma,ne,ni,matrix_type)
+function [conn,files,block_prob_mat] = local_load_connections( ...
+        folder,sigma,E_group,I_group,matrix_type)
 % All stored matrices use rows=Pre and columns=Post.
 matrix_type = lower(char(matrix_type));
-if ~ismember(matrix_type,{'block_conn','conn_mat'})
-    error('params.connection_matrix_type must be block_conn or conn_mat.');
+if ~ismember(matrix_type,{'block_conn','conn_mat','prob_mat'})
+    error(['params.connection_matrix_type must be block_conn, ' ...
+        'conn_mat or prob_mat.']);
 end
 if strcmp(matrix_type,'block_conn')
     suffix = 'block_conn_mat';
+elseif strcmp(matrix_type,'prob_mat')
+    suffix = 'prob_mat';
 else
     suffix = 'conn_mat';
 end
@@ -115,14 +129,33 @@ files = struct( ...
     'EI',fullfile(folder,sprintf('EI_sig%g_%s.mat',sigma(2),suffix)), ...
     'IE',fullfile(folder,sprintf('IE_sig%g_%s.mat',sigma(3),suffix)), ...
     'II',fullfile(folder,sprintf('II_sig%g_%s.mat',sigma(4),suffix)));
-[parts.EE,ok_ee] = local_load_part(files.EE,['EE_',suffix],[ne,ne]);
-[parts.EI,ok_ei] = local_load_part(files.EI,['EI_',suffix],[ne,ni]);
-[parts.IE,ok_ie] = local_load_part(files.IE,['IE_',suffix],[ni,ne]);
-[parts.II,ok_ii] = local_load_part(files.II,['II_',suffix],[ni,ni]);
+block_prob_mat = struct();
+if strcmp(matrix_type,'prob_mat')
+    [parts.EE,ok_ee] = local_load_probability_part( ...
+        files.EE,'EE_prob_mat',E_group,E_group);
+    [parts.EI,ok_ei] = local_load_probability_part( ...
+        files.EI,'EI_prob_mat',E_group,I_group);
+    [parts.IE,ok_ie] = local_load_probability_part( ...
+        files.IE,'IE_prob_mat',I_group,E_group);
+    [parts.II,ok_ii] = local_load_probability_part( ...
+        files.II,'II_prob_mat',I_group,I_group);
+else
+    ne = sum(E_group);
+    ni = sum(I_group);
+    [parts.EE,ok_ee] = local_load_part(files.EE,['EE_',suffix],[ne,ne]);
+    [parts.EI,ok_ei] = local_load_part(files.EI,['EI_',suffix],[ne,ni]);
+    [parts.IE,ok_ie] = local_load_part(files.IE,['IE_',suffix],[ni,ne]);
+    [parts.II,ok_ii] = local_load_part(files.II,['II_',suffix],[ni,ni]);
+end
 if ~(ok_ee && ok_ei && ok_ie && ok_ii)
     error('Connection files are missing or have inconsistent Pre x Post dimensions.');
 end
-conn = [parts.EE,parts.EI;parts.IE,parts.II];
+if strcmp(matrix_type,'prob_mat')
+    conn = [];
+    block_prob_mat = parts;
+else
+    conn = [parts.EE,parts.EI;parts.IE,parts.II];
+end
 end
 
 
@@ -139,4 +172,23 @@ end
 data = load(path,variable);
 part = data.(variable);
 ok = isequal(size(part),expected_size);
+end
+
+
+function [part,ok] = local_load_probability_part( ...
+        path,variable,expected_rows,expected_cols)
+[part,ok] = local_load_part(path,variable, ...
+    [numel(expected_rows),numel(expected_cols)]);
+if ~ok
+    return
+end
+info = whos('-file',path);
+if ~all(ismember({'row_groups','col_groups'},{info.name}))
+    ok = false;
+    return
+end
+groups = load(path,'row_groups','col_groups');
+ok = isequal(double(groups.row_groups(:).'),double(expected_rows(:).')) && ...
+    isequal(double(groups.col_groups(:).'),double(expected_cols(:).')) && ...
+    all(isfinite(part(:))) && all(part(:) >= 0 & part(:) <= 1);
 end
